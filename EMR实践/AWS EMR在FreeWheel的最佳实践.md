@@ -50,9 +50,7 @@ Core node和Worker node都可以配置实例队列，实例队列是一个非常
 
 ##### Long term EMR VS Ondemand创建EMR
 我们不选择在每次需要EMR集群的时候去重新创建一个集群的原因是，除了机器实例provision的时间外，EMR还需要额外运行较长时间的bootstraping脚本去启动很多服务才能让整个集群ready。而Master node和Core node我们在上文介绍过，相较于Worker node，他们不仅需要支撑Hadoop服务，还需要下载并配置Spark， Ganglia等环境，以及更多服务（根据用户勾选的application决定），这样频繁创建和销毁带来的时间开销相对于hourly schedule的任务而言，是不能忽略的。所以我们选择创建维护一个long term EMR集群，通过scale worker node来控制负载的方案。而对于使用间隔较长，如daily甚至weekly job 来讲，在每次需要使用EMR的时候进行临时创建是一个更合理的方案。  
-
 选择Long term之后我们就需要关注集群的稳定性，然而我们仍然选择了没有HA的方案，由于Master和Core均为Ondemand机型，这样就可以保证集群在非极端特殊情况下不会出现crash的情况。而对于极端特殊情况，考虑到两个pipeline对数据持久化并无需求，如果能在分钟级别的时间内重建EMR集群并恢复任务，相对于长期存在的HA方案的master + core方案来说，在都能满足生产需求的情况下ROI更高。所以综合考虑，我们选择了单点master和单点core node的方案，配合上Terraform脚本和Airflow的调度，我们可以在发生小概率集群事故得到情况下快速重建EMR集群并重跑任务，从而恢复pipeline。  
-
 额外值得一提的是，在EMR使用初期，Terraform上并不支持创建具有instanceFleet的EMR，当时仅能够使用命令行或者使用boto3的库创建一个EMR集群，由于没有state文件进行track，所以也无法通过Terraform进行统一管理（如销毁和修改等），针对EMR这部分只能自己实现一套stateful的管理脚本。目前最新版本得到Terraform已经加入了对带有InstanceFleet的EMR的支持。但是实际使用当中，由于EMR中的很多配置只能在创建时一次性修改，如Master&Core&Task的机型配置，InstanceFleet的机型选择，Hadoop和Spark的一些customize的配置（这个依然可以通过启动之后修改对应的xml或者conf文件，然后重启对应服务进行修改，但是这种做法对于产品环境并不友好），Security group等，如果需要修改这些，仍然需要销毁集群，用新的配置重新创建。 
 
 ##### 关于Spot机型和AZ的选择
@@ -67,7 +65,7 @@ yarn.node-labels.am.default-node-label-expression: 'CORE'
 来开启这项配置。  
 对于Master node，除了NameNode的内存开销外，就是Spark historyServer和ResourceManager的内存开销，相对worker node来讲，资源并不是很紧张，所以适当选择就好。
 
-#### Worker node伸缩策略
+##### Worker node伸缩策略
 为了满足对不同hourly数据量的处理能够在限定时间内完成，需要根据当前小时input的数据量进行集群capacity的调整，在对Worker node的伸缩过程中，我们考虑了以下方面。
 
 ##### Instance fleet的使用
@@ -81,21 +79,20 @@ yarn.node-labels.am.default-node-label-expression: 'CORE'
 instanceFleet目前还存在一些limitation，如：
 - 我们无法主动设置不同instance type的provision优先级。在一些场景下，我们期望加入更多的机型备选，然而其中的某些实例类型我们仅希望在主力机型不足的情况下作为补充机型加入，这种诉求目前是无法实现的；官方给出的解释是，其内部会有算法来计算我们需要的units，会结合总体开销和实例资源情况综合考虑进行机器的provision。
 - 第二个limitation是无法在集群创建之后进行机型的增删改，也不能对fleet中机型的配置进行修改，如EBS存储大小。这对于long term运行的集群需要进行调整的时候并不是一个友好的行为。
-- 另外就是在AWS console上查看instanceFleet的状态时，无法高效的找到当前处于某种状态的机器，因为fleet会保留历史上1000个机器的记录，当超过1000个历史机器时，就会丢弃掉最早的记录，始终保持但是页面上需要不断刷新才能获取完整的list，此时对于在WEB上进行直观调试的用户而言不太友好，而对于使用aws cli的用户来说，我们可以通过list fleet并filter某种状态的instance来获取自己想要的结果；
-
-下面是使用的InstanceFleet的
+- 另外就是在AWS console上查看instanceFleet的状态时，无法高效的找到当前处于某种状态的机器，因为fleet会保留历史上1000个机器的记录，当超过1000个历史机器时，就会丢弃掉最早的记录，始终保持但是页面上需要不断刷新才能获取完整的list，此时对于在WEB上进行直观调试的用户而言不太友好，而对于使用aws cli的用户来说，我们可以通过list fleet并filter某种状态的instance来获取自己想要的结果。  
+下面是使用的InstanceFleet的配置情况：  
+![emr_config](emr_config.png)  
 
 ##### 集群伸缩策略
 对于不同的应用场景，我们目前使用了两种伸缩策略，一种是由任务调度端根据任务情况进行主动scale，一种是通过监控集群状态由EMR进行被动的scale。  
+
 ###### 主动伸缩的方式
 对于基于Optimus的ETL pipeline来说，对于每个batch，Spark需要多少resource进行计算，我们可以通过历史数据进行拟合，找出数据量和所需资源的关系，并通过不断反馈，可以越来越准确的估计出对于给定量的数据集所需的集群资源，由于Optimus运行的EMR集群是dedicated的，所以我们就可以在提交Spark任务之前就去精准的scale集群达到目的capacity。下图是Worker node伸缩在Airflow 调度下的workflow。
-![scaling workflow](5.png)
+![scaling workflow](5.png)  
 
 ###### 被动伸缩的方式
-Datafeed pipeline，实际上是多条不同schedule间隔，不同资源需求，以及不同任务SLA需求的任务集合，由于每个任务之间相互独立，此时EMR相当于一个共享的计算资源池，很难从每个任务schedule的维度去管理EMR集群的capacity。所以我们采用了EMR managed scaling[EMR托管scaling](https://docs.aws.amazon.com/zh_cn/emr/latest/ManagementGuide/emr-managed-scaling.html)。启动了此项功能之后，EMR会持续评估集群指标，做出扩展决策，动态的进行扩容。此功能适用于由实例组或实例队列组成的集群。另外我们在Yarn上设置了不同的queue，以期能够将不同资源需求和优先级的任务做粗粒度的隔离，结合上Yarn的capacity scheduler，让整体集群资源尽量合理使用。在实际使用中，我们多次遇到了无法伸缩的情况，此时需要手动上线进行一次伸缩，之后就可以恢复了，目前原因不详。  
-
+Datafeed pipeline，实际上是多条不同schedule间隔，不同资源需求，以及不同任务SLA需求的任务集合，由于每个任务之间相互独立，此时EMR相当于一个共享的计算资源池，很难从每个任务schedule的维度去管理EMR集群的capacity。所以我们采用了[EMR managed scaling](https://docs.aws.amazon.com/zh_cn/emr/latest/ManagementGuide/emr-managed-scaling.html)。启动了此项功能之后，EMR会持续评估集群指标，做出扩展决策，动态的进行扩容。此功能适用于由实例组或实例队列组成的集群。另外我们在Yarn上设置了不同的queue，以期能够将不同资源需求和优先级的任务做粗粒度的隔离，结合上Yarn的capacity scheduler，让整体集群资源尽量合理使用。在实际使用中，我们多次遇到了无法伸缩的情况，此时需要手动上线进行一次伸缩，之后就可以恢复了，目前原因不详。  
 以上采用的两种方案各有利弊，对于第一种方案，更适用于一个dedicated集群用于提交完全可预知capcity的场景，这种情况下我们在提交任务之前就可以主动的将集群size设置成我们想要的capcity，快速而准确； 而对于第二种场景，非常适合用于EMR作为一个共享的计算平台，应用端作为单一的任务提交者无法获取当前及未来提交的任务全貌，也就无法计算EMR所需扩充的capacity，这种情况下EMR集群需要在任务提交之后根据一些集群metrics才能进行动态调整伸缩，在时效性上会有延迟，对于一些DAG较为复杂，中间步骤较多且对shuffle和数据倾斜敏感的Spark应用来讲也不友好。  
-
 针对以上case，Transformer团队正在开发一套运行与EMR和Yarn之上的基于应用和策略角度运维的Framework - Cybertron。我们期望能通过这个服务可以站在更全局的角度去合理的管理多个EMR集群资源，能够让应用端不去关注EMR集群的资源情况，综合Yarn的scheduler和Queue等的配置，对集群资源和任务调度能有一个更高视角的控制。
 
 ##### Spot和Ondemand机型的混用  
