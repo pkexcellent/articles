@@ -40,7 +40,7 @@ Core node和Task node都可以配置实例队列，实例队列是一个非常�
 - 数据量不稳定；客户在不同时区分布的密度，各个小时的流量也不同，以及区域性事件的发生，以及内部上游模块可能会发生delay等都会造成每小时数据量不均匀。虽然每天24个小时的数据量分布虽然大致趋势相同，但是不能准确预测，只有将要开始处理这个batch的时候，才能从上游拿到这个batch的数据量信息；
 ![数据量示意图](3.png) 
 - 数据在ETL的中间过程中在HDFS上没有持久化需求；对于HDFS的需求是支撑Spark任务以及EMR集群的访问，保证一次批任务内部的事务性即可。需要持久化的数据会由后续的模块load到clickhouse，以及同步发布到S3上交由hive来管理；
-- Spark任务对于集群资源的需求：Optimus中由于存在大量的计算（如数据序列化反序列化，metric的计算，数据的排序聚合，Hyperloglog计算等）和缓存（分层建模中，在DAG中被反复用到的数据），Spark任务在不同阶段对集群资源的需求点是不同的：从数据load进内存到对数据进行transform进行建模的过程，是计算密集型的，需要消耗大量的CPU，同时由于有些dataframe需要被更上层的模型复用，需要cache起来，这里需要大量的memory； 而最终在支撑大量并发SparkSQL的数据抽取和聚合的运算中，网络和CPU都是很大性能瓶颈。我们针对Spark应用做了非常精细的调优工作，具体可以参考这些文章[placeholdes for article links](???)。在处理一个batch的过程中，集群资源使用情况可以对应比较下面三个图。
+- Spark任务对于集群资源的需求：Optimus中由于存在大量的计算（如数据序列化反序列化，metric的计算，数据的排序聚合，Hyperloglog计算等）和缓存（分层建模中，在DAG中被反复用到的数据），Spark任务在不同阶段对集群资源的需求点是不同的：从数据load进内存到对数据进行transform进行建模的过程，是计算密集型的，需要消耗大量的CPU，同时由于有些dataframe需要被更上层的模型复用，需要cache起来，这里需要大量的memory； 而最终在支撑大量并发SparkSQL的数据抽取和聚合的运算中，网络和CPU都是很大性能瓶颈。我们针对Spark应用做了非常精细的调优工作，具体可以参考这些文章[Spark实践一](https://mp.weixin.qq.com/s/McZZXOUSUCt3iJJQTfmE4g)，[Spark实践二](https://mp.weixin.qq.com/s/E1SNTIQdxiRroi5y7QR3ng) 。在处理一个batch的过程中，集群资源使用情况可以对应比较下面三个图。
 ![cpu](emr_sigle_batch_cpu.png)![memory](emr_sigle_batch_mem.png)![network](emr_sigle_batch_network.png)  
 
 #### 基于JetFire的DataFeed pipeline
