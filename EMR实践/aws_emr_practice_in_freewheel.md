@@ -113,7 +113,7 @@ Datafeed pipeline，实际上是多条不同schedule间隔，不同资源需求�
 ![datafeed_worker_node_scaling](datafeed_worker_node_scaling.png)  
 
 #### HDFS的依赖
-在我们的使用场景中，EMR仅作为计算资源，其上的HDFS仅需要支撑Spark应用即可。在一次批处理的过程中，生成的数据会先存储在HDFS上，然后由publisher将数据搬移并持久化到S3上。关于为什么不直接写入S3，一方面是考虑到数据的特点需要在发布的时候进行一次重新组织，而S3的最终一致性模型会带来第二次copy的时候发生数据丢失（针对这个case，我们仍然可以由producer端在写出数据的同时产生一份file list，作为上下游数据的接口来解决；另外也可以通过开启一致性视图，不过这个带来额外的组件依赖和开销；根据最新的AWS文档，S3已经解决的read-after-write的问题[read-after-write-consistency](https://aws.amazon.com/cn/blogs/aws/amazon-s3-update-strong-read-after-write-consistency/)）。另外，Spark直接写S3文件也存在着一定的性能问题，而且由Spark应用直接针对不同的数据发布特点组织数据形式，也会造成逻辑耦合太紧，不利于维护，还会加大Spark应用的运行时间，变相增加了成本同时，对于使用Spot竞价机器的场景，更长的运行时间也就意味着更大的被中断机会。
+在我们的使用场景中，EMR仅作为计算资源，其上的HDFS仅需要支撑Spark应用即可。在一次批处理的过程中，生成的数据会先存储在HDFS上，然后由publisher将数据搬移并持久化到S3上。关于为什么不直接写入S3，主要是考虑到业务数据的特点以及S3的特性（笔者在写这篇文章的时候，看到AWS已经解决了S3的强一致模型，极大的简化了很多系统设计，可以参考[Strong Read-After-Write Consistency](https://aws.amazon.com/cn/blogs/aws/amazon-s3-update-strong-read-after-write-consistency/)的描述）。从系统设计的角度，我们也不期望数据流上下游由于数据形式耦合的太紧，这样不仅不利于维护，还会加大Spark应用的运行时间，变相增加了成本同时，对于使用Spot竞价机器的场景，更长的运行时间也就意味着更大的被中断机会。
 
 ## 总结
 随着我们对EMR使用的越来越深入，在满足产品需求的同时，我们也在不断“榨干”EMR开销，本文期望能通过我们的EMR使用经验给读者启发。也感谢在这个过程中AWS EMR团队的支持。  
